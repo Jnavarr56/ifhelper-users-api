@@ -1,3 +1,4 @@
+const redis = require("redis");
 const morgan = require("morgan");
 const express = require("express");
 const mongoose = require("mongoose");
@@ -6,11 +7,17 @@ const bodyParser = require("body-parser");
 
 const { User } = require("./db/models");
 
-const PORT = 3000;
-const MONGO_DB_URL = "mongodb://127.0.0.1:27017/?gssapiServiceName=mongodb";
+const PORT = process.env.PORT || 3000;
+const REDIS_PORT = process.env.REDIS_PORT || 6379;
+
+const MONGO_DB_URL = "mongodb://127.0.0.1:27017";
+
 const PATHNAME = "/users";
 
+const cache = redis.createClient(REDIS_PORT);
 const app = express();
+
+const deleteFromCache = key => cache.del(key);
 
 app
 	.use(bodyParser.urlencoded({ extended: true }))
@@ -33,32 +40,53 @@ app.get(PATHNAME, (req, res) => {
 });
 
 app.get(`${PATHNAME}/:user_id`, (req, res) => {
-	User.findById(req.params.user_id, (error, user) => {
+	const { user_id } = req.params;
+
+	User.findById(user_id, (error, user) => {
 		if (error) return res.status(500).send({ error });
 		res.send({ user });
 	});
 });
 
 app.post(PATHNAME, (req, res) => {
-	const { ...newUserData } = req.body;
+	const { body: newUserData } = req;
+	User.create(newUserData, (error, new_user) => {
+		if (error) {
+			console.trace("PROBLEM CREATING USER");
+			console.trace(error);
 
-	User.create({ ...newUserData }, (error, new_user) => {
-		if (error) return res.status(500).send({ error });
+			const { name } = error;
 
-		if (!new_user)
-			return res
-				.status(500)
-				.send({ error: "Problem Retrieving Newly Created User" });
+			if (name === "MongoError" && error.keyPattern.email) {
+				return res
+					.status(400)
+					.send({ error_code: "USER WITH EMAIL ALREADY EXISTS" });
+			} else if (name === "ValidationError") {
+				const { errors } = error;
+				const bad_params = {};
 
+				for (let param in errors) {
+					bad_params[param] = errors[param].kind;
+				}
+				return res.status(400).send({
+					error_code: "BAD PARAMS",
+					bad_params
+				});
+			}
+
+			return res.status(500).send(error);
+		}
 		res.send({ new_user });
 	});
 });
 
 app.patch(`${PATHNAME}/:user_id`, (req, res) => {
-	const { ...updatedUserData } = req.body;
+	const { user_id } = req.params;
+	const { body: updatedUserData } = req;
+
 	User.findByIdAndUpdate(
-		req.params.user_id,
-		{ ...updatedUserData },
+		user_id,
+		updatedUserData,
 		{ new: true, runValidators: true },
 		(error, updated_user) => {
 			if (error) return res.status(500).send({ error });
@@ -72,12 +100,16 @@ app.patch(`${PATHNAME}/:user_id`, (req, res) => {
 });
 
 app.delete(`${PATHNAME}/:user_id`, (req, res) => {
-	User.findByIdAndDelete(req.params.user_id, (error, deleted_user) => {
-		if (error) return res.status(500).send({ error });
+	const { user_id } = req.params;
 
-		if (!deleted_user)
-			return res.status(500).send({ error: "Problem Retrieving Deleted User" });
+	User.findByIdAndDelete(user_id, (error, deleted_user) => {
+		if (error) {
+			return res.status(500).send({ error });
+		} else if (!deleted_user) {
+			return res.status(500).send({ error: "PROBLEM RETRIEVING DELETED USER" });
+		}
 
+		deleteFromCache("EMAIL_AVAILABILITY" + deleted_user.email);
 		res.send({ deleted_user });
 	});
 });
@@ -87,13 +119,20 @@ const dbOptions = {
 	useUnifiedTopology: true
 };
 
-mongoose.connect(`${MONGO_DB_URL}/users-api`, dbOptions, error => {
+cache.on("connect", error => {
 	if (error) {
 		console.log(error);
 		process.exit(1);
 	}
 
-	app.listen(PORT, () => {
-		console.log(`Users API running on PORT ${PORT}!`);
+	mongoose.connect(`${MONGO_DB_URL}/users-api`, dbOptions, error => {
+		if (error) {
+			console.log(error);
+			process.exit(1);
+		}
+
+		app.listen(PORT, () => {
+			console.log(`Users API running on PORT ${PORT}!`);
+		});
 	});
 });

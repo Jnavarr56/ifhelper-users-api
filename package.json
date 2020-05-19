@@ -30,7 +30,8 @@
 		"express": "^4.17.1",
 		"express-bearer-token": "^2.4.0",
 		"mongoose": "^5.9.15",
-		"morgan": "^1.10.0"
+		"morgan": "^1.10.0",
+		"redis": "^3.0.2"
 	},
 	"devDependencies": {
 		"eslint": "^7.0.0",

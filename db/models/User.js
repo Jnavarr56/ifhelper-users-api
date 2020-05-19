@@ -11,6 +11,7 @@ const UserSchema = new Schema(
 			required: true
 		},
 		email: {
+			unique: true,
 			type: String,
 			required: true
 		},
@@ -18,13 +19,18 @@ const UserSchema = new Schema(
 			type: Boolean,
 			default: false
 		},
+		password: {
+			type: String,
+			required: true
+		},
 		active: {
 			type: Boolean,
 			default: true
 		},
 		access_level: {
 			type: String,
-			enum: [ "basic", "admin" ]
+			enum: [ "BASIC", "ADMIN" ],
+			default: "BASIC"
 		}
 	},
 	{ timestamps: true }
