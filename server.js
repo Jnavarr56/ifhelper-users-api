@@ -17,12 +17,9 @@ app
 	.use(bodyParser.json())
 	.use(morgan("dev"));
 
-
-
 app.get(PATHNAME, (req, res) => {
-
 	const dbQueryValues = aqp(req.query);
-    const { limit, skip, sort, filter, population } = dbQueryValues;
+	const { limit, skip, sort, filter, population } = dbQueryValues;
 
 	User.find(filter)
 		.limit(limit)
@@ -30,7 +27,7 @@ app.get(PATHNAME, (req, res) => {
 		.sort(sort)
 		.populate(population)
 		.exec((error, query_results) => {
-            if (error) return res.status(500).send({ error });
+			if (error) return res.status(500).send({ error });
 			res.send({ query_results });
 		});
 });
@@ -43,7 +40,7 @@ app.get(`${PATHNAME}/:user_id`, (req, res) => {
 });
 
 app.post(PATHNAME, (req, res) => {
-	const { code, ...newUserData } = req.body;
+	const { ...newUserData } = req.body;
 
 	User.create({ ...newUserData }, (error, new_user) => {
 		if (error) return res.status(500).send({ error });
@@ -58,7 +55,7 @@ app.post(PATHNAME, (req, res) => {
 });
 
 app.patch(`${PATHNAME}/:user_id`, (req, res) => {
-	const { code, ...updatedUserData } = req.body;
+	const { ...updatedUserData } = req.body;
 	User.findByIdAndUpdate(
 		req.params.user_id,
 		{ ...updatedUserData },
@@ -91,11 +88,10 @@ const dbOptions = {
 };
 
 mongoose.connect(`${MONGO_DB_URL}/users-api`, dbOptions, error => {
-
-    if (error) {
-        console.log(error);
-        process.exit(1);
-    }
+	if (error) {
+		console.log(error);
+		process.exit(1);
+	}
 
 	app.listen(PORT, () => {
 		console.log(`Users API running on PORT ${PORT}!`);

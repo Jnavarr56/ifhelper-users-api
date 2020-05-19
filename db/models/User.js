@@ -24,7 +24,7 @@ const UserSchema = new Schema(
 		},
 		access_level: {
 			type: String,
-			enum: ["basic", "admin"]
+			enum: [ "basic", "admin" ]
 		}
 	},
 	{ timestamps: true }
