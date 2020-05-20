@@ -29,7 +29,7 @@ const UserSchema = new Schema(
 		},
 		access_level: {
 			type: String,
-			enum: [ "BASIC", "ADMIN" ],
+			enum: [ "BASIC", "ADMIN", "SYS-ADMIN" ],
 			default: "BASIC"
 		}
 	},
