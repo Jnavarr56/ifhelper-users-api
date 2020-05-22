@@ -1,4 +1,3 @@
-const redis = require("redis");
 const axios = require("axios");
 const bcrypt = require("bcrypt");
 const morgan = require("morgan");
@@ -6,40 +5,26 @@ const express = require("express");
 const mongoose = require("mongoose");
 const aqp = require("api-query-params");
 const bodyParser = require("body-parser");
+const cookieParser = require("cookie-parser");
 const bearerToken = require("express-bearer-token");
 
 const { User } = require("./db/models");
 
 const PORT = process.env.PORT || 3000;
-const REDIS_PORT = process.env.REDIS_PORT || 6379;
+// const REDIS_PORT = process.env.REDIS_PORT || 6379;
 
 const MONGO_DB_URL = "mongodb://127.0.0.1:27017";
 
-const AUTH_API = "http://localhost:5000/authorize";
-const REFRESH_AUTH_API = "http://localhost:5000/refresh";
+const AUTH_API = "http://localhost:3000/authorize";
 
 const PATHNAME = "/users";
 
-const cache = redis.createClient(REDIS_PORT);
 const app = express();
 
-const deleteFromCache = key => cache.del(key);
-
-const userAuthTokenCache = redis.createClient({
-	port: REDIS_PORT,
-	prefix: "USER_AUTHENTICATION"
-});
-
-const checkUserAuthTokenCache = accessToken => {
-	return new Promise(resolve => {
-		userAuthTokenCache.get(accessToken, (cacheError, cachedVal) => {
-			resolve({ cacheError, cachedVal: JSON.parse(cachedVal) });
-		});
-	});
-};
+app.use(cookieParser());
 
 const authMiddleware = accessLevels => {
-	return (req, res, next) => {
+	return async (req, res, next) => {
 		const { token } = req;
 
 		if (!token) {
@@ -104,35 +89,35 @@ app.get(PATHNAME, authMiddleware([ "ADMIN" ]), (req, res) => {
 		});
 });
 
-// Make more me's.
-// app.get(`${PATHNAME}/me`, authMiddleware(['BASIC', 'ADMIN']), (req, res) => {
+app.get(
+	`${PATHNAME}/:user_id`,
+	authMiddleware([ "BASIC", "ADMIN" ]),
+	(req, res) => {
+		const { user_id } = req.params;
 
-// 	const { authenticated_user: { _id } } = req.locals;
+		const { access_type, authenticated_user } = req.locals;
 
-// 	User.findById(_id, (error, user) => {
-// 		if (error) return res.status(500).send(error);
-
-// 		if (!user) {
-// 			return res.sendStatus(404);
-// 		}
-
-// 		res.send({ user });
-// 	});
-// });
-
-app.get(`${PATHNAME}/:user_id`, authMiddleware([ "ADMIN" ]), (req, res) => {
-	const { user_id } = req.params;
-
-	User.findById(user_id, (error, user) => {
-		if (error) return res.status(500).send(error);
-
-		if (!user) {
-			return res.sendStatus(404);
+		if (
+			access_type === "USER" &&
+			authenticated_user.access_level === "BASIC" &&
+			authenticated_user._id !== user_id
+		) {
+			return res
+				.status(401)
+				.send({ error_code: "BASIC USER MAY ONLY RETRIEVE SELF" });
 		}
 
-		res.send({ user });
-	});
-});
+		User.findById(user_id, (error, user) => {
+			if (error) return res.status(500).send(error);
+
+			if (!user) {
+				return res.sendStatus(404);
+			}
+
+			res.send({ user });
+		});
+	}
+);
 
 app.post(PATHNAME, authMiddleware([ "ADMIN" ]), async (req, res) => {
 	const { body: newUserData } = req;
@@ -181,7 +166,23 @@ app.post(PATHNAME, authMiddleware([ "ADMIN" ]), async (req, res) => {
 
 app.patch(`${PATHNAME}/:user_id`, authMiddleware([ "ADMIN" ]), (req, res) => {
 	const { user_id } = req.params;
+	const { authenticated_user, access_type } = req.locals;
+	if (
+		access_type === "USER" &&
+		authenticated_user.access_level === "BASIC" &&
+		authenticated_user._id !== user_id
+	) {
+		return res
+			.status(401)
+			.send({ error_code: "BASIC USER MAY ONLY PERFORM OPERATIONS ON SELF" });
+	}
+
 	const { body: updatedUserData } = req;
+
+	if (updatedUserData.password) {
+		const salt = bcrypt.genSaltSync(10);
+		updatedUserData.password = bcrypt.hashSync(updatedUserData.password, salt);
+	}
 
 	User.findByIdAndUpdate(
 		user_id,
@@ -191,7 +192,7 @@ app.patch(`${PATHNAME}/:user_id`, authMiddleware([ "ADMIN" ]), (req, res) => {
 			if (error) return res.status(500).send({ error });
 
 			if (!updated_user)
-				return res.status(500).send({ error: "Problem Retrieving Updated User" });
+				return res.status(404).send({ error: "USER DOES NOT EXIST" });
 
 			res.send({ updated_user });
 		}
@@ -200,6 +201,16 @@ app.patch(`${PATHNAME}/:user_id`, authMiddleware([ "ADMIN" ]), (req, res) => {
 
 app.delete(`${PATHNAME}/:user_id`, authMiddleware([ "ADMIN" ]), (req, res) => {
 	const { user_id } = req.params;
+	const { authenticated_user, access_type } = req.locals;
+	if (
+		access_type === "USER" &&
+		authenticated_user.access_level === "BASIC" &&
+		authenticated_user._id !== user_id
+	) {
+		return res
+			.status(401)
+			.send({ error_code: "BASIC USER MAY ONLY PERFORM OPERATIONS ON SELF" });
+	}
 
 	User.findByIdAndDelete(user_id, (error, deleted_user) => {
 		if (error) {
@@ -208,7 +219,6 @@ app.delete(`${PATHNAME}/:user_id`, authMiddleware([ "ADMIN" ]), (req, res) => {
 			return res.status(500).send({ error: "PROBLEM RETRIEVING DELETED USER" });
 		}
 
-		deleteFromCache("EMAIL_AVAILABILITY" + deleted_user.email);
 		res.send({ deleted_user });
 	});
 });
@@ -218,20 +228,13 @@ const dbOptions = {
 	useUnifiedTopology: true
 };
 
-cache.on("connect", error => {
+mongoose.connect(`${MONGO_DB_URL}/users-api`, dbOptions, error => {
 	if (error) {
 		console.log(error);
 		process.exit(1);
 	}
 
-	mongoose.connect(`${MONGO_DB_URL}/users-api`, dbOptions, error => {
-		if (error) {
-			console.log(error);
-			process.exit(1);
-		}
-
-		app.listen(PORT, () => {
-			console.log(`Users API running on PORT ${PORT}!`);
-		});
+	app.listen(PORT, () => {
+		console.log(`Users API running on PORT ${PORT}!`);
 	});
 });
