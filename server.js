@@ -10,20 +10,28 @@ const bearerToken = require("express-bearer-token");
 
 const { User } = require("./db/models");
 
-const PORT = process.env.PORT || 3000;
-// const REDIS_PORT = process.env.REDIS_PORT || 6379;
+const {
+	ENV_PORT,
+	MONGO_DB_URL,
+	AUTHORIZE_API = 'http://server/api/authentication/authorize'
+} = process.env;
+const PORT = ENV_PORT || 3000;
 
-const MONGO_DB_URL = "mongodb://127.0.0.1:27017";
-
-const AUTH_API = "http://localhost:3000/authorize";
-
+const API_BASE_URL = typeof process.env.API_BASE_URL === "string" ? process.env.API_BASE_URL : "/api";
 const PATHNAME = "/users";
+const API_NAME = API_BASE_URL + PATHNAME;
 
 const app = express();
 
-app.use(cookieParser());
+app
+	.use(bodyParser.urlencoded({ extended: true }))
+	.use(bodyParser.json())
+	.use(bearerToken())
+	.use(cookieParser())
+	.use(morgan("dev"));
 
-const authMiddleware = accessLevels => {
+
+const authMiddleware = (accessLevels) => {
 	return async (req, res, next) => {
 		const { token } = req;
 
@@ -34,47 +42,50 @@ const authMiddleware = accessLevels => {
 		}
 
 		const headers = { Authorization: `Bearer ${token}` };
-
 		axios
-			.get(AUTH_API, { headers })
-			.then(({ data }) => {
-				let permit = true;
-				const { access_type } = data;
+			.get(AUTHORIZE_API, { headers })
+			.then(({ data: tokenPayload })=> {
 
-				if (
-					access_type !== "SYSTEM" &&
-					accessLevels &&
-					!accessLevels.includes(data.authenticated_user.access_level)
-				) {
-					permit = false;
-				}
+				const { access_type, authenticated_user } = tokenPayload;
+				
+
+				let permit = true;
+				if (access_type === "USER") {
+					if (accessLevels && 
+						!accessLevels.includes(authenticated_user.access_level)
+					) {
+						permit === false;
+					}
+					
+				} 
 
 				if (!permit) {
-					return res.status(401).send({
+					return res.status(403).send({
 						error_code: "INSUFFICIENT ACCESS LEVEL"
 					});
 				}
 
-				req.locals = { ...data };
+				req.locals = tokenPayload;
 				next();
 			})
 			.catch(error => {
-				const {
-					data: { error_code },
-					status
-				} = error.response;
-				return res.status(status).send({ error_code });
+				const { status, data } = error.response;
+
+				if (status === 401) {
+					return res.status(status).send(data);	
+				} else {
+					throw new Error(error);
+				}
 			});
 	};
 };
 
-app
-	.use(bodyParser.urlencoded({ extended: true }))
-	.use(bodyParser.json())
-	.use(bearerToken())
-	.use(morgan("dev"));
-
-app.get(PATHNAME, authMiddleware([ "ADMIN" ]), (req, res) => {
+const limitToSelf = (access_type, access_level, match) => {
+	return access_type === "USER" &&
+	access_level === "BASIC" && match
+}
+	
+app.get(API_NAME, authMiddleware([ "ADMIN" ]), (req, res) => {
 	const dbQueryValues = aqp(req.query);
 	const { limit, skip, sort, filter, population } = dbQueryValues;
 
@@ -84,141 +95,127 @@ app.get(PATHNAME, authMiddleware([ "ADMIN" ]), (req, res) => {
 		.sort(sort)
 		.populate(population)
 		.exec((error, query_results) => {
-			if (error) return res.status(500).send({ error });
+			if (error) return res.status(500).send(error);
 			res.send({ query_results });
 		});
 });
 
 app.get(
-	`${PATHNAME}/:user_id`,
+	`${API_NAME}/:user_id`,
 	authMiddleware([ "BASIC", "ADMIN" ]),
 	(req, res) => {
 		const { user_id } = req.params;
-
 		const { access_type, authenticated_user } = req.locals;
 
-		if (
-			access_type === "USER" &&
-			authenticated_user.access_level === "BASIC" &&
+		const forbid = limitToSelf(
+			access_type, 
+			authenticated_user.access_level, 
 			authenticated_user._id !== user_id
-		) {
+		);
+		
+		if (forbid) {
 			return res
-				.status(401)
+				.status(403)
 				.send({ error_code: "BASIC USER MAY ONLY RETRIEVE SELF" });
 		}
 
 		User.findById(user_id, (error, user) => {
 			if (error) return res.status(500).send(error);
-
-			if (!user) {
-				return res.sendStatus(404);
-			}
-
-			res.send({ user });
+			if (!user) return res.sendStatus(404);
+			res.send(user);
 		});
 	}
 );
 
-app.post(PATHNAME, authMiddleware([ "ADMIN" ]), async (req, res) => {
+
+const isUniqueError = (error) => {
+	return error.name === "MongoError" && error.keyPattern.email;
+}
+
+const isBadParamsError = (error) => {
+	return error.name === "ValidationError";
+}
+
+app.post(API_NAME, authMiddleware([ "ADMIN" ]), async (req, res) => {
 	const { body: newUserData } = req;
 
-	const newUser = new User(newUserData);
+	const new_user = new User(newUserData);
 
-	try {
-		await newUser.save();
+	try { 
+		await new_user.save(); 
+
 	} catch (error) {
-		console.trace("PROBLEM CREATING USER");
-		console.trace(error);
 
-		const { name } = error;
+		if (isUniqueError(error)) {
 
-		if (name === "MongoError" && error.keyPattern.email) {
-			return res
-				.status(400)
-				.send({ error_code: "USER WITH EMAIL ALREADY EXISTS" });
-		} else if (name === "ValidationError") {
-			const { errors } = error;
-			const bad_params = {};
+			return res.status(400).send({ error_code: "USER WITH EMAIL ALREADY EXISTS" });
 
-			for (let param in errors) {
-				bad_params[param] = errors[param].kind;
-			}
+		} else if (isBadParamsError(error)) {
+
 			return res.status(400).send({
 				error_code: "BAD PARAMS",
-				bad_params
+				bad_params: Object.keys(error.errors).map(param => {
+					const val = {};
+					val[param] = error.errors[param].kind;
+					return val;
+				})
 			});
+
 		}
 
-		return res.status(500).send(error);
+		res.status(500).send(error);
 	}
 
-	const salt = bcrypt.genSaltSync(10);
-	newUser.password = bcrypt.hashSync(newUser.password, salt);
-
-	try {
-		await newUser.save();
-	} catch (error) {
-		return res.status(500).send(error);
-	}
-
-	res.send({ new_user: newUser });
+	res.send({ new_user });
 });
 
-app.patch(`${PATHNAME}/:user_id`, authMiddleware([ "ADMIN" ]), (req, res) => {
+app.patch(`${API_NAME}/:user_id`, authMiddleware([ "BASIC", "ADMIN" ]), (req, res) => {
 	const { user_id } = req.params;
-	const { authenticated_user, access_type } = req.locals;
-	if (
-		access_type === "USER" &&
-		authenticated_user.access_level === "BASIC" &&
-		authenticated_user._id !== user_id
-	) {
-		return res
-			.status(401)
-			.send({ error_code: "BASIC USER MAY ONLY PERFORM OPERATIONS ON SELF" });
-	}
-
 	const { body: updatedUserData } = req;
+	const { authenticated_user, access_type } = req.locals;
+
+	const forbid = limitToSelf(
+		access_type, 
+		authenticated_user.access_level, 
+		authenticated_user._id !== user_id
+	);
+	if (forbid) {
+		return res.status(403).send({ error_code: "BASIC USER MAY ONLY RETRIEVE SELF" });
+	}
 
 	if (updatedUserData.password) {
-		const salt = bcrypt.genSaltSync(10);
-		updatedUserData.password = bcrypt.hashSync(updatedUserData.password, salt);
+		bcrypt.hash(updatedUserData.password, 10, (hashError, password) => {
+			if (hashError) return res.status(500).send(hashError);
+			User.findByIdAndUpdate(
+				user_id,
+				{ ...updatedUserData, password },
+				{ new: true, runValidators: true, useFindAndModify: true },
+				(error, updated_user) => {
+					if (error) return res.status(500).send(error);
+					if (!updated_user) return res.sendStatus(404).send();
+					res.send({ updated_user });
+				}
+			);
+		});
+	} else {
+		User.findByIdAndUpdate(
+			user_id,
+			{ ...updatedUserData, password },
+			{ new: true, runValidators: true, useFindAndModify: true },
+			(error, updated_user) => {
+				if (error) return res.status(500).send(error);
+				if (!updated_user) return res.sendStatus(404).send();
+				res.send({ updated_user });
+			}
+		);
 	}
-
-	User.findByIdAndUpdate(
-		user_id,
-		updatedUserData,
-		{ new: true, runValidators: true },
-		(error, updated_user) => {
-			if (error) return res.status(500).send({ error });
-
-			if (!updated_user)
-				return res.status(404).send({ error: "USER DOES NOT EXIST" });
-
-			res.send({ updated_user });
-		}
-	);
 });
 
-app.delete(`${PATHNAME}/:user_id`, authMiddleware([ "ADMIN" ]), (req, res) => {
-	const { user_id } = req.params;
-	const { authenticated_user, access_type } = req.locals;
-	if (
-		access_type === "USER" &&
-		authenticated_user.access_level === "BASIC" &&
-		authenticated_user._id !== user_id
-	) {
-		return res
-			.status(401)
-			.send({ error_code: "BASIC USER MAY ONLY PERFORM OPERATIONS ON SELF" });
-	}
 
-	User.findByIdAndDelete(user_id, (error, deleted_user) => {
-		if (error) {
-			return res.status(500).send({ error });
-		} else if (!deleted_user) {
-			return res.status(500).send({ error: "PROBLEM RETRIEVING DELETED USER" });
-		}
-
+app.delete(`${API_NAME}/:user_id`, authMiddleware([ "ADMIN" ]), (req, res) => {
+	User.findByIdAndDelete(req.params.user_id, (error, deleted_user) => {
+		if (error) return res.status(500).send(error);
+		if (!deleted_user) return res.sendStatus(404).send();
 		res.send({ deleted_user });
 	});
 });
@@ -228,13 +225,14 @@ const dbOptions = {
 	useUnifiedTopology: true
 };
 
-mongoose.connect(`${MONGO_DB_URL}/users-api`, dbOptions, error => {
+mongoose.connect(`${MONGO_DB_URL}/users-api?retryWrites=true&w=majority`, dbOptions, error => {
 	if (error) {
 		console.log(error);
 		process.exit(1);
 	}
-
-	app.listen(PORT, () => {
-		console.log(`Users API running on PORT ${PORT}!`);
-	});
+	User.init().then(() => {
+		app.listen(PORT, () => {
+			console.log(`Users API running on PORT ${PORT}!`);
+		});
+	})
 });
