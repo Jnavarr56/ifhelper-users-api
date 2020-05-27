@@ -10,7 +10,7 @@
 		"dev": "nodemon ./server.js"
 	},
 	"lint-staged": {
-		"**/*.*{js,jsx}": [
+		"**/*.*{js}": [
 			"prettier --write",
 			"eslint --fix"
 		]
