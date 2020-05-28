@@ -7,29 +7,31 @@ const aqp = require("api-query-params");
 const bodyParser = require("body-parser");
 const cookieParser = require("cookie-parser");
 const bearerToken = require("express-bearer-token");
-
+const cors = require('cors');
 const { User } = require("./db/models");
+const { PORT, AUTH_API, PATHNAME } = require('./vars');
 
-const {
-	ENV_PORT,
-	MONGO_DB_URL,
-	AUTHORIZE_API = 'http://server/api/authentication/authorize'
-} = process.env;
-const PORT = ENV_PORT || 3000;
+require("dotenv").config();
 
-const API_BASE_URL = typeof process.env.API_BASE_URL === "string" ? process.env.API_BASE_URL : "/api";
-const PATHNAME = "/users";
-const API_NAME = API_BASE_URL + PATHNAME;
+const { MONGO_DB_URL } = process.env;
 
 const app = express();
+
+const corsOpts = {
+	credentials: true,
+	origin: 'http://localhost:3000',
+	allowedHeaders: ['Access-Control-Allow-Credentials', 'Authorization', 'Content-Type']
+}
 
 app
 	.use(bodyParser.urlencoded({ extended: true }))
 	.use(bodyParser.json())
 	.use(bearerToken())
 	.use(cookieParser())
-	.use(morgan("dev"));
+	.use(morgan("dev"))
+	.use(cors(corsOpts));
 
+app.options('*', cors(corsOpts));
 
 const authMiddleware = (accessLevels) => {
 	return async (req, res, next) => {
@@ -43,7 +45,7 @@ const authMiddleware = (accessLevels) => {
 
 		const headers = { Authorization: `Bearer ${token}` };
 		axios
-			.get(AUTHORIZE_API, { headers })
+			.get(`${AUTH_API}/authorize`, { headers })
 			.then(({ data: tokenPayload })=> {
 
 				const { access_type, authenticated_user } = tokenPayload;
@@ -71,7 +73,7 @@ const authMiddleware = (accessLevels) => {
 			.catch(error => {
 				const { status, data } = error.response;
 
-				if (status === 401) {
+				if (status === 401)  {
 					return res.status(status).send(data);	
 				} else {
 					throw new Error(error);
@@ -85,7 +87,7 @@ const limitToSelf = (access_type, access_level, match) => {
 	access_level === "BASIC" && match
 }
 	
-app.get(API_NAME, authMiddleware([ "ADMIN" ]), (req, res) => {
+app.get(PATHNAME, authMiddleware([ "ADMIN" ]), (req, res) => {
 	const dbQueryValues = aqp(req.query);
 	const { limit, skip, sort, filter, population } = dbQueryValues;
 
@@ -101,7 +103,7 @@ app.get(API_NAME, authMiddleware([ "ADMIN" ]), (req, res) => {
 });
 
 app.get(
-	`${API_NAME}/:user_id`,
+	`${PATHNAME}/:user_id`,
 	authMiddleware([ "BASIC", "ADMIN" ]),
 	(req, res) => {
 		const { user_id } = req.params;
@@ -109,8 +111,8 @@ app.get(
 
 		const forbid = limitToSelf(
 			access_type, 
-			authenticated_user.access_level, 
-			authenticated_user._id !== user_id
+			authenticated_user && authenticated_user.access_level, 
+			authenticated_user && (authenticated_user._id !== user_id)
 		);
 		
 		if (forbid) {
@@ -136,7 +138,7 @@ const isBadParamsError = (error) => {
 	return error.name === "ValidationError";
 }
 
-app.post(API_NAME, authMiddleware([ "ADMIN" ]), async (req, res) => {
+app.post(PATHNAME, authMiddleware([ "ADMIN" ]), async (req, res) => {
 	const { body: newUserData } = req;
 
 	const new_user = new User(newUserData);
@@ -169,15 +171,15 @@ app.post(API_NAME, authMiddleware([ "ADMIN" ]), async (req, res) => {
 	res.send({ new_user });
 });
 
-app.patch(`${API_NAME}/:user_id`, authMiddleware([ "BASIC", "ADMIN" ]), (req, res) => {
+app.patch(`${PATHNAME}/:user_id`, authMiddleware([ "BASIC", "ADMIN" ]), (req, res) => {
 	const { user_id } = req.params;
 	const { body: updatedUserData } = req;
 	const { authenticated_user, access_type } = req.locals;
 
 	const forbid = limitToSelf(
 		access_type, 
-		authenticated_user.access_level, 
-		authenticated_user._id !== user_id
+		authenticated_user && authenticated_user.access_level, 
+		authenticated_user && (authenticated_user._id !== user_id)
 	);
 	if (forbid) {
 		return res.status(403).send({ error_code: "BASIC USER MAY ONLY RETRIEVE SELF" });
@@ -212,7 +214,7 @@ app.patch(`${API_NAME}/:user_id`, authMiddleware([ "BASIC", "ADMIN" ]), (req, re
 });
 
 
-app.delete(`${API_NAME}/:user_id`, authMiddleware([ "ADMIN" ]), (req, res) => {
+app.delete(`${PATHNAME}/:user_id`, authMiddleware([ "ADMIN" ]), (req, res) => {
 	User.findByIdAndDelete(req.params.user_id, (error, deleted_user) => {
 		if (error) return res.status(500).send(error);
 		if (!deleted_user) return res.sendStatus(404).send();
