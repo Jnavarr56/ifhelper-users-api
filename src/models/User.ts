@@ -35,7 +35,7 @@ const UserSchema = new Schema(
 		},
 		access_level: {
 			type: String,
-			enum: ['BASIC', 'ADMIN', 'SYS-ADMIN'],
+			enum: ['BASIC', 'ADMIN', 'SYS_ADMIN'],
 			default: 'BASIC'
 		}
 	},

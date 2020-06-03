@@ -63,6 +63,14 @@ export default abstract class BaseController {
 		BaseController.jsonErrorResponse(res, 400, errorCode);
 	}
 
+	public credentialProcessingError(res: e.Response, errorCode?: string): void {
+		BaseController.jsonErrorResponse(
+			res,
+			500,
+			errorCode || 'Could Not Process Credentials'
+		);
+	}
+
 	public missingAuthorizationToken(res: e.Response, errorCode?: string): void {
 		BaseController.jsonErrorResponse(
 			res,
@@ -93,12 +101,23 @@ export default abstract class BaseController {
 		);
 	}
 
+	public invalidParams(
+		res: e.Response,
+		params?: { [key: string]: string }
+	): void {
+		BaseController.jsonErrorResponse(res, 400, 'Invalid Parameters', params);
+	}
+
 	public unauthorized(res: e.Response, errorCode?: string): void {
 		BaseController.jsonErrorResponse(res, 401, errorCode);
 	}
 
 	public forbidden(res: e.Response, errorCode?: string): void {
 		BaseController.jsonResponse(res, 403, errorCode);
+	}
+
+	public conflict(res: e.Response, errorCode?: string): void {
+		BaseController.jsonResponse(res, 409, errorCode);
 	}
 
 	public notFound(res: e.Response, errorCode?: string): void {

@@ -1,9 +1,11 @@
 import { AxiosResponse, AxiosError } from 'axios';
 import { ErrorResponse } from '../Response';
+import { AccessLevel } from '../User';
 
 export interface TokenPayload {
 	access_type: 'USER';
 	authenticated_user: {
+		access_level: AccessLevel;
 		_id: string;
 	};
 }
